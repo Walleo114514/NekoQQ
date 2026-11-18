@@ -3,8 +3,8 @@ name: Build and Release APK
 on:
   push:
     tags:
-      - 'v*'              # 推送 v* tag 时自动构建并发布 Release
-  workflow_dispatch:       # 支持在 Actions 页面手动触发
+      - 'v*'
+  workflow_dispatch:
     inputs:
       tag_name:
         description: '要发布到的 tag 名称（留空则仅构建，不上传 Release）'
@@ -33,13 +33,11 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 安装 Gradle 环境，用于在缺乏 gradlew 时生成 wrapper
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.7' # 如果编译报错，可以尝试改为 8.5, 8.6 或 8.9
+          gradle-version: '8.7'
 
-      # 检查并生成缺失的 Gradle Wrapper
       - name: Generate Gradle Wrapper
         run: |
           if [ ! -f gradlew ]; then
@@ -50,11 +48,9 @@ jobs:
           fi
           chmod +x gradlew
 
-      # 执行构建
       - name: Build Debug APK
         run: ./gradlew assembleDebug --stacktrace
 
-      # 上传构建产物（所有手动构建都能在 Artifacts 里下载）
       - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,7 +58,6 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
-      # 自动触发（推 Tag）时，发布到 Release
       - name: Upload APK to Release (tag push)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -72,7 +67,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 手动触发（workflow_dispatch）且填写了 tag_name 时，发布到对应 Release
       - name: Upload APK to Release (manual)
         if: github.event_name == 'workflow_dispatch' && inputs.tag_name != ''
         uses: softprops/action-gh-release@v2
