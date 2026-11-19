@@ -65,24 +65,26 @@ jobs:
           echo "=== 1. 修复 MainHook.kt 的类声明语法错误 ==="
           FILE_MAIN="app/src/main/java/neko/qq/MainHook.kt"
           if [ -f "$FILE_MAIN" ]; then
-            # 清理所有 IXposedMod 残留
             sed -i '/import de.robv.android.xposed.IXposedMod/d' "$FILE_MAIN"
             sed -i 's/,\s*IXposedMod//g' "$FILE_MAIN"
             sed -i 's/IXposedMod\s*,//g' "$FILE_MAIN"
             sed -i 's/IXposedMod//g' "$FILE_MAIN"
-            # 暴力重写 class 声明行，确保干净地继承 IXposedHookLoadPackage
             sed -i -E 's/class MainHook[^{]*\{/class MainHook : de.robv.android.xposed.IXposedHookLoadPackage {/' "$FILE_MAIN"
-            echo "--- 修复后的 MainHook 类声明 ---"
-            grep -n "class MainHook" "$FILE_MAIN" || true
           fi
 
-          echo "=== 2. 修复 Display.kt 找不到 Contexts 的问题 ==="
+          echo "=== 2. 修复 Display.kt 的 import 位置 ==="
           FILE_DISPLAY="app/src/main/java/neko/qq/features/Display.kt"
           if [ -f "$FILE_DISPLAY" ]; then
-            # 强制补上 import
-            if ! grep -q "import neko.qq.util.Contexts" "$FILE_DISPLAY"; then
-              sed -i '1s/^/import neko.qq.util.Contexts\n/' "$FILE_DISPLAY"
+            # 先删掉可能被错误插入到第一行的 import
+            sed -i '/^import neko.qq.util.Contexts$/d' "$FILE_DISPLAY"
+            # 正确地插入到 package 行之后
+            if grep -q "^package " "$FILE_DISPLAY"; then
+              sed -i '/^package /a import neko.qq.util.Contexts' "$FILE_DISPLAY"
+            else
+              sed -i '1i import neko.qq.util.Contexts' "$FILE_DISPLAY"
             fi
+            echo "--- Display.kt 前 5 行 ---"
+            head -n 5 "$FILE_DISPLAY"
           fi
 
           echo "=== 3. 修复 Contexts.kt 的 ActivityThread 调用 ==="
@@ -96,8 +98,10 @@ jobs:
           echo "=== 4. 修复 Views.kt 中的 parent 歧义 ==="
           FILE_VIEWS="app/src/main/java/neko/qq/util/Views.kt"
           if [ -f "$FILE_VIEWS" ]; then
-            sed -i -E 's/([a-zA-Z0-9_]+)\.parent/\1.parent as android.view.ViewGroup/g' "$FILE_VIEWS" || true
-            sed -i 's/as android.view.ViewGroup as android.view.ViewGroup/as android.view.ViewGroup/g' "$FILE_VIEWS" || true
+            # 针对类似 xxx.parent.parent 的调用，在第一个 parent 上强制类型转换
+            sed -i -E 's/([a-zA-Z0-9_]+)\.parent\.parent/(\1.parent as android.view.ViewGroup).parent/g' "$FILE_VIEWS" || true
+            echo "--- Views.kt 第 30-40 行 ---"
+            sed -n '30,40p' "$FILE_VIEWS"
           fi
 
       - name: Generate Gradle Wrapper
