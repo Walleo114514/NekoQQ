@@ -1,0 +1,137 @@
+name: Build and Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: '要发布到的 tag 名称（留空则仅构建，不上传 Release）'
+        required: false
+        default: ''
+      prerelease:
+        description: '是否标记为预发布'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      # ==========================================
+      # 1. 修复 Xposed 依赖下载问题
+      # ==========================================
+      - name: Fix Xposed Dependency Automatically
+        run: |
+          echo "正在尝试下载 Xposed API Jar 包..."
+          mkdir -p app/libs
+          curl -L --retry 3 --connect-timeout 15 -o app/libs/api-82.jar "https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar" || true
+          
+          if [ -f app/libs/api-82.jar ] && [ -s app/libs/api-82.jar ]; then
+            echo "✅ JAR包下载成功，修改依赖为本地依赖..."
+            sed -i -E 's/(compileOnly|implementation)\([ ]*"de.robv.android.xposed:api:[^"]+"[ ]*\)/compileOnly(files("libs\/api-82.jar"))/g' app/build.gradle.kts
+          else
+            echo "❌ 下载 JAR 失败，将强行把仓库地址注入到 settings.gradle.kts..."
+            if [ -f settings.gradle.kts ]; then
+              sed -i 's/mavenCentral()/mavenCentral()\n        maven { url = uri("https:\/\/api.xposed.info\/") }/g' settings.gradle.kts
+            fi
+          fi
+
+      # ==========================================
+      # 2. 精准修复 Kotlin 源码编译错误
+      # ==========================================
+      - name: Auto Fix Kotlin Compile Errors
+        run: |
+          echo "=== 1. 修复 MainHook.kt 的类声明语法错误 ==="
+          FILE_MAIN="app/src/main/java/neko/qq/MainHook.kt"
+          if [ -f "$FILE_MAIN" ]; then
+            # 清理所有 IXposedMod 残留
+            sed -i '/import de.robv.android.xposed.IXposedMod/d' "$FILE_MAIN"
+            sed -i 's/,\s*IXposedMod//g' "$FILE_MAIN"
+            sed -i 's/IXposedMod\s*,//g' "$FILE_MAIN"
+            sed -i 's/IXposedMod//g' "$FILE_MAIN"
+            # 暴力重写 class 声明行，确保干净地继承 IXposedHookLoadPackage
+            sed -i -E 's/class MainHook[^{]*\{/class MainHook : de.robv.android.xposed.IXposedHookLoadPackage {/' "$FILE_MAIN"
+            echo "--- 修复后的 MainHook 类声明 ---"
+            grep -n "class MainHook" "$FILE_MAIN" || true
+          fi
+
+          echo "=== 2. 修复 Display.kt 找不到 Contexts 的问题 ==="
+          FILE_DISPLAY="app/src/main/java/neko/qq/features/Display.kt"
+          if [ -f "$FILE_DISPLAY" ]; then
+            # 强制补上 import
+            if ! grep -q "import neko.qq.util.Contexts" "$FILE_DISPLAY"; then
+              sed -i '1s/^/import neko.qq.util.Contexts\n/' "$FILE_DISPLAY"
+            fi
+          fi
+
+          echo "=== 3. 修复 Contexts.kt 的 ActivityThread 调用 ==="
+          FILE_CTX="app/src/main/java/neko/qq/util/Contexts.kt"
+          if [ -f "$FILE_CTX" ]; then
+            sed -i '/import android.app.ActivityThread/d' "$FILE_CTX"
+            sed -i 's/ActivityThread.currentActivityThread()/Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null)/g' "$FILE_CTX"
+            sed -i 's/ActivityThread.currentApplication()/Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null) as android.app.Application/g' "$FILE_CTX"
+          fi
+
+          echo "=== 4. 修复 Views.kt 中的 parent 歧义 ==="
+          FILE_VIEWS="app/src/main/java/neko/qq/util/Views.kt"
+          if [ -f "$FILE_VIEWS" ]; then
+            sed -i -E 's/([a-zA-Z0-9_]+)\.parent/\1.parent as android.view.ViewGroup/g' "$FILE_VIEWS" || true
+            sed -i 's/as android.view.ViewGroup as android.view.ViewGroup/as android.view.ViewGroup/g' "$FILE_VIEWS" || true
+          fi
+
+      - name: Generate Gradle Wrapper
+        run: |
+          if [ ! -f gradlew ]; then
+            gradle wrapper --gradle-version 8.7
+          fi
+          chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NekoQQ-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+      - name: Upload APK to Release (tag push)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/*.apk
+          prerelease: ${{ inputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK to Release (manual)
+        if: github.event_name == 'workflow_dispatch' && inputs.tag_name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          files: app/build/outputs/apk/debug/*.apk
+          prerelease: ${{ inputs.prerelease }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
