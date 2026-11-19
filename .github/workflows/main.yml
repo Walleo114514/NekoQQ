@@ -39,39 +39,66 @@ jobs:
           gradle-version: '8.7'
 
       # ==========================================
-      # 核心修复步骤：下载 JAR 或 强制注入仓库
+      # 1. 修复 Xposed 依赖下载问题
       # ==========================================
       - name: Fix Xposed Dependency Automatically
         run: |
           echo "正在尝试下载 Xposed API Jar 包..."
           mkdir -p app/libs
-          # 尝试下载官方的 api-82.jar
           curl -L --retry 3 --connect-timeout 15 -o app/libs/api-82.jar "https://api.xposed.info/de/robv/android/xposed/api/82/api-82.jar" || true
           
           if [ -f app/libs/api-82.jar ] && [ -s app/libs/api-82.jar ]; then
-            echo "✅ JAR包下载成功，正在修改 app/build.gradle.kts 为本地依赖..."
-            # 使用正则替换掉所有相关的 compileOnly 或 implementation 依赖
+            echo "✅ JAR包下载成功，修改依赖为本地依赖..."
             sed -i -E 's/(compileOnly|implementation)\([ ]*"de.robv.android.xposed:api:[^"]+"[ ]*\)/compileOnly(files("libs\/api-82.jar"))/g' app/build.gradle.kts
-            echo "=== 修改后的 app/build.gradle.kts 中 xposed 相关的依赖 ==="
-            grep -n "xposed\|api-82.jar" app/build.gradle.kts || echo "未找到匹配项，可能原依赖写法不同"
           else
-            echo "❌ 下载 JAR 失败（或超时），将强行把仓库地址注入到 settings.gradle.kts..."
+            echo "❌ 下载 JAR 失败，将强行把仓库地址注入到 settings.gradle.kts..."
             if [ -f settings.gradle.kts ]; then
-              # 强行在 google() 和 mavenCentral() 之后插入 api.xposed.info 仓库
-              sed -i 's/google()/google()\n        maven { url = uri("https:\/\/api.xposed.info\/") }/g' settings.gradle.kts
               sed -i 's/mavenCentral()/mavenCentral()\n        maven { url = uri("https:\/\/api.xposed.info\/") }/g' settings.gradle.kts
-              echo "=== 修改后的 settings.gradle.kts ==="
-              head -n 20 settings.gradle.kts
             fi
+          fi
+
+      # ==========================================
+      # 2. 修复 Kotlin 源码编译错误
+      # ==========================================
+      - name: Auto Fix Kotlin Compile Errors
+        run: |
+          echo "=== 修复 IXposedMod 导致的编译错误 ==="
+          FILE_MAIN="app/src/main/java/neko/qq/MainHook.kt"
+          if [ -f "$FILE_MAIN" ]; then
+            # 删掉 import 和类声明中的 IXposedMod
+            sed -i '/import de.robv.android.xposed.IXposedMod/d' "$FILE_MAIN"
+            sed -i 's/, *IXposedMod//g' "$FILE_MAIN"
+            sed -i 's/IXposedMod *,//g' "$FILE_MAIN"
+            sed -i 's/IXposedMod//g' "$FILE_MAIN"
+          fi
+
+          echo "=== 修复 ActivityThread 找不到的问题 ==="
+          # 往 app/build.gradle.kts 注入 Rikka 隐藏 API 依赖
+          if ! grep -q "dev.rikka.hidden" app/build.gradle.kts; then
+            sed -i '/dependencies {/a \    compileOnly("dev.rikka.hidden:stub:4.0.0")' app/build.gradle.kts
+          fi
+          
+          # 移除直接 import，改成反射调用 (以防 Rikka 依赖未生效)
+          FILE_CTX="app/src/main/java/neko/qq/util/Contexts.kt"
+          if [ -f "$FILE_CTX" ]; then
+            sed -i '/import android.app.ActivityThread/d' "$FILE_CTX"
+            sed -i 's/ActivityThread.currentActivityThread()/Class.forName("android.app.ActivityThread").getMethod("currentActivityThread").invoke(null)/g' "$FILE_CTX"
+            sed -i 's/ActivityThread.currentApplication()/Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null) as android.app.Application/g' "$FILE_CTX"
+          fi
+
+          echo "=== 修复 Views.kt 中的 parent 歧义 ==="
+          FILE_VIEWS="app/src/main/java/neko/qq/util/Views.kt"
+          if [ -f "$FILE_VIEWS" ]; then
+            # 强制转换为 ViewGroup
+            sed -i 's/(view\.parent)/(view.parent as android.view.ViewGroup)/g' "$FILE_VIEWS" || true
+            sed -i 's/view\.parent\.removeView/(view.parent as android.view.ViewGroup).removeView/g' "$FILE_VIEWS" || true
+            sed -i 's/view\.parent\.parent/(view.parent as android.view.ViewGroup).parent/g' "$FILE_VIEWS" || true
           fi
 
       - name: Generate Gradle Wrapper
         run: |
           if [ ! -f gradlew ]; then
-            echo "正在自动生成缺失的 gradlew..."
             gradle wrapper --gradle-version 8.7
-          else
-            echo "已找到 gradlew。"
           fi
           chmod +x gradlew
 
