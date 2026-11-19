@@ -58,20 +58,34 @@ jobs:
           fi
 
       # ==========================================
-      # 2. 自动修复 Kotlin 源码编译错误
+      # 2. 精准修复 Kotlin 源码编译错误
       # ==========================================
       - name: Auto Fix Kotlin Compile Errors
         run: |
-          echo "=== 1. 修复 IXposedMod 导致的编译错误 ==="
+          echo "=== 1. 修复 MainHook.kt 的类声明语法错误 ==="
           FILE_MAIN="app/src/main/java/neko/qq/MainHook.kt"
           if [ -f "$FILE_MAIN" ]; then
+            # 清理所有 IXposedMod 残留
             sed -i '/import de.robv.android.xposed.IXposedMod/d' "$FILE_MAIN"
-            sed -i 's/, *IXposedMod//g' "$FILE_MAIN"
-            sed -i 's/IXposedMod *,//g' "$FILE_MAIN"
+            sed -i 's/,\s*IXposedMod//g' "$FILE_MAIN"
+            sed -i 's/IXposedMod\s*,//g' "$FILE_MAIN"
             sed -i 's/IXposedMod//g' "$FILE_MAIN"
+            # 暴力重写 class 声明行，确保干净地继承 IXposedHookLoadPackage
+            sed -i -E 's/class MainHook[^{]*\{/class MainHook : de.robv.android.xposed.IXposedHookLoadPackage {/' "$FILE_MAIN"
+            echo "--- 修复后的 MainHook 类声明 ---"
+            grep -n "class MainHook" "$FILE_MAIN" || true
           fi
 
-          echo "=== 2. 修复 ActivityThread 找不到的问题 ==="
+          echo "=== 2. 修复 Display.kt 找不到 Contexts 的问题 ==="
+          FILE_DISPLAY="app/src/main/java/neko/qq/features/Display.kt"
+          if [ -f "$FILE_DISPLAY" ]; then
+            # 强制补上 import
+            if ! grep -q "import neko.qq.util.Contexts" "$FILE_DISPLAY"; then
+              sed -i '1s/^/import neko.qq.util.Contexts\n/' "$FILE_DISPLAY"
+            fi
+          fi
+
+          echo "=== 3. 修复 Contexts.kt 的 ActivityThread 调用 ==="
           FILE_CTX="app/src/main/java/neko/qq/util/Contexts.kt"
           if [ -f "$FILE_CTX" ]; then
             sed -i '/import android.app.ActivityThread/d' "$FILE_CTX"
@@ -79,12 +93,10 @@ jobs:
             sed -i 's/ActivityThread.currentApplication()/Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null) as android.app.Application/g' "$FILE_CTX"
           fi
 
-          echo "=== 3. 修复 Views.kt 中的 parent 歧义 ==="
+          echo "=== 4. 修复 Views.kt 中的 parent 歧义 ==="
           FILE_VIEWS="app/src/main/java/neko/qq/util/Views.kt"
           if [ -f "$FILE_VIEWS" ]; then
-            # 直接将所有 .parent 的调用替换为强转的写法，消除 Kotlin 的类型推断歧义
-            sed -i 's/\([a-zA-Z0-9_]*\)\.parent/\1.parent as android.view.ViewGroup/g' "$FILE_VIEWS" || true
-            # 防止重复强转
+            sed -i -E 's/([a-zA-Z0-9_]+)\.parent/\1.parent as android.view.ViewGroup/g' "$FILE_VIEWS" || true
             sed -i 's/as android.view.ViewGroup as android.view.ViewGroup/as android.view.ViewGroup/g' "$FILE_VIEWS" || true
           fi
 
