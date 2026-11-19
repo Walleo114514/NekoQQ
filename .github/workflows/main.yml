@@ -58,27 +58,20 @@ jobs:
           fi
 
       # ==========================================
-      # 2. 修复 Kotlin 源码编译错误
+      # 2. 自动修复 Kotlin 源码编译错误
       # ==========================================
       - name: Auto Fix Kotlin Compile Errors
         run: |
-          echo "=== 修复 IXposedMod 导致的编译错误 ==="
+          echo "=== 1. 修复 IXposedMod 导致的编译错误 ==="
           FILE_MAIN="app/src/main/java/neko/qq/MainHook.kt"
           if [ -f "$FILE_MAIN" ]; then
-            # 删掉 import 和类声明中的 IXposedMod
             sed -i '/import de.robv.android.xposed.IXposedMod/d' "$FILE_MAIN"
             sed -i 's/, *IXposedMod//g' "$FILE_MAIN"
             sed -i 's/IXposedMod *,//g' "$FILE_MAIN"
             sed -i 's/IXposedMod//g' "$FILE_MAIN"
           fi
 
-          echo "=== 修复 ActivityThread 找不到的问题 ==="
-          # 往 app/build.gradle.kts 注入 Rikka 隐藏 API 依赖
-          if ! grep -q "dev.rikka.hidden" app/build.gradle.kts; then
-            sed -i '/dependencies {/a \    compileOnly("dev.rikka.hidden:stub:4.0.0")' app/build.gradle.kts
-          fi
-          
-          # 移除直接 import，改成反射调用 (以防 Rikka 依赖未生效)
+          echo "=== 2. 修复 ActivityThread 找不到的问题 ==="
           FILE_CTX="app/src/main/java/neko/qq/util/Contexts.kt"
           if [ -f "$FILE_CTX" ]; then
             sed -i '/import android.app.ActivityThread/d' "$FILE_CTX"
@@ -86,13 +79,13 @@ jobs:
             sed -i 's/ActivityThread.currentApplication()/Class.forName("android.app.ActivityThread").getMethod("currentApplication").invoke(null) as android.app.Application/g' "$FILE_CTX"
           fi
 
-          echo "=== 修复 Views.kt 中的 parent 歧义 ==="
+          echo "=== 3. 修复 Views.kt 中的 parent 歧义 ==="
           FILE_VIEWS="app/src/main/java/neko/qq/util/Views.kt"
           if [ -f "$FILE_VIEWS" ]; then
-            # 强制转换为 ViewGroup
-            sed -i 's/(view\.parent)/(view.parent as android.view.ViewGroup)/g' "$FILE_VIEWS" || true
-            sed -i 's/view\.parent\.removeView/(view.parent as android.view.ViewGroup).removeView/g' "$FILE_VIEWS" || true
-            sed -i 's/view\.parent\.parent/(view.parent as android.view.ViewGroup).parent/g' "$FILE_VIEWS" || true
+            # 直接将所有 .parent 的调用替换为强转的写法，消除 Kotlin 的类型推断歧义
+            sed -i 's/\([a-zA-Z0-9_]*\)\.parent/\1.parent as android.view.ViewGroup/g' "$FILE_VIEWS" || true
+            # 防止重复强转
+            sed -i 's/as android.view.ViewGroup as android.view.ViewGroup/as android.view.ViewGroup/g' "$FILE_VIEWS" || true
           fi
 
       - name: Generate Gradle Wrapper
